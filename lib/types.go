@@ -103,3 +103,32 @@ func parseServerStatus(data *snapcast.ServerGetStatusResponse) (*SnapcastServer,
 
 	return &SnapcastServer{Groups: groups, Streams: streams, Clients: allClients}, nil
 }
+
+func snapcastGroupsEqual(g1, g2 SnapcastGroup) bool {
+	// Compare basic fields
+	if g1.GroupID != g2.GroupID ||
+		g1.GroupName != g2.GroupName ||
+		g1.Muted != g2.Muted ||
+		g1.StreamID != g2.StreamID {
+		return false
+	}
+
+	// Compare clients map
+	if len(g1.Clients) != len(g2.Clients) {
+		return false
+	}
+
+	for clientID, client1 := range g1.Clients {
+		client2, exists := g2.Clients[clientID]
+		if !exists {
+			return false
+		}
+
+		// Compare each client
+		if client1 != client2 {
+			return false
+		}
+	}
+
+	return true
+}
