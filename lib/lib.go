@@ -244,10 +244,10 @@ func (bridge *SnapcastMQTTBridge) MainLoop() {
 
 			case m := <-notify.GroupOnMute:
 				bridge.processGroupStatus(m.ID) //todo update value directly?
-			case m := <-notify.GroupOnNameChanged:
-				bridge.processGroupStatus(m.ID)
-			case m := <-notify.GroupOnStreamChanged:
-				bridge.processGroupStatus(m.ID)
+			case <-notify.GroupOnNameChanged:
+				bridge.processServerStatus(true, true, false)
+			case <-notify.GroupOnStreamChanged:
+				bridge.processServerStatus(true, true, false)
 
 			case <-notify.ServerOnUpdate:
 				bridge.processServerStatus(true, true, true)
