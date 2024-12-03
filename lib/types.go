@@ -1,13 +1,9 @@
 package lib
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 
 	"github.com/ConnorsApps/snapcast-go/snapcast"
-	"github.com/ConnorsApps/snapcast-go/snapclient"
 )
 
 type SnapcastServer struct {
@@ -43,57 +39,6 @@ type SnapcastGroup struct {
 	Muted     bool                      `json:"muted"`
 	StreamID  string                    `json:"stream_id"`
 	Clients   map[string]SnapcastClient `json:"clients"`
-}
-
-func processServerStatus(client *snapclient.Client) {
-
-	res, err := client.Send(context.Background(), snapcast.MethodServerGetStatus, struct{}{})
-	if err != nil {
-		slog.Error("Error ...", "error", err)
-	}
-	if res.Error != nil {
-		slog.Error("Error ...", "error", res.Error)
-	}
-
-	serverStatusRes, err := snapcast.ParseResult[snapcast.ServerGetStatusResponse](res.Result)
-	if err != nil {
-		slog.Error("Error ...", "error", res.Error)
-	}
-
-	serverStatus, err := parseServerStatus(serverStatusRes)
-
-	jsonData, err := json.MarshalIndent(serverStatus, "", "    ")
-	if err != nil {
-		slog.Error("Failed to create json", "error", err)
-		return
-	}
-
-	fmt.Println(string(jsonData))
-}
-
-func processGroupStatus(client *snapclient.Client, lid string) {
-
-	res, err := client.Send(context.Background(), snapcast.MethodGroupGetStatus, &snapcast.GroupGetStatusRequest{ID: lid})
-	if err != nil {
-		slog.Error("Error ...", "error", err)
-	}
-	if res.Error != nil {
-		slog.Error("Error ...", "error", res.Error)
-	}
-
-	groupStatusRes, err := snapcast.ParseResult[snapcast.GroupGetStatusResponse](res.Result)
-	if err != nil {
-		slog.Error("Error ...", "error", res.Error)
-	}
-
-	groupStatus, err := parseGroupStatus(&groupStatusRes.Group)
-
-	jsonData, err := json.MarshalIndent(groupStatus, "", "    ")
-	if err != nil {
-		slog.Error("Failed to create json", "error", err)
-		return
-	}
-	fmt.Println(string(jsonData))
 }
 
 func parseClientStatus(c *snapcast.Client, g *snapcast.Group) (*SnapcastClient, error) {

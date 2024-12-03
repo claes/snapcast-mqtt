@@ -2,7 +2,7 @@ package lib
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"log/slog"
 	"strings"
 
@@ -12,19 +12,12 @@ import (
 	"github.com/ConnorsApps/snapcast-go/snapclient"
 )
 
-type WifiClient struct {
-	MacAddress    string `json:"mac_address"`
-	Interface     string `json:"interface"`
-	Uptime        string `json:"uptime"`
-	LastActivity  string `json:"last_activity"`
-	SignalToNoise string `json:"signal_to_noise"`
-}
-
 type SnapcastMQTTBridge struct {
 	MqttClient       mqtt.Client
 	SnapClient       *snapclient.Client
 	TopicPrefix      string
 	SnapClientConfig SnapClientConfig
+	ServerStatus     SnapcastServer
 }
 
 type SnapClientConfig struct {
@@ -87,7 +80,35 @@ func (bridge *SnapcastMQTTBridge) PublishMQTT(subtopic string, message string, r
 	token.Wait()
 }
 
-func (bridge *SnapcastMQTTBridge) printServerStatus() {
+func (bridge *SnapcastMQTTBridge) publishServerStatus(serverStatus SnapcastServer) {
+
+	//todo publish server status?
+
+	for _, client := range serverStatus.Clients {
+		bridge.publishClientStatus(client)
+	}
+}
+
+func (bridge *SnapcastMQTTBridge) publishClientStatus(clientStatus SnapcastClient) {
+	publish := false
+	if bridge.ServerStatus.Clients != nil {
+		currentClientStatus, exists := bridge.ServerStatus.Clients[clientStatus.ClientID]
+		publish = !(exists && currentClientStatus == clientStatus)
+	} else {
+		publish = true
+	}
+
+	if publish {
+		jsonData, err := json.MarshalIndent(clientStatus, "", "    ")
+		if err != nil {
+			slog.Error("Failed to create json for client", "error", err, "client", clientStatus.ClientID)
+			return
+		}
+		bridge.PublishMQTT("snapcast/client/"+clientStatus.ClientID, string(jsonData), true)
+	}
+}
+
+func (bridge *SnapcastMQTTBridge) processServerStatus() {
 
 	res, err := bridge.SnapClient.Send(context.Background(), snapcast.MethodServerGetStatus, struct{}{})
 	if err != nil {
@@ -97,16 +118,23 @@ func (bridge *SnapcastMQTTBridge) printServerStatus() {
 		slog.Error("Error ...", "error", res.Error)
 	}
 
-	serverStatus, err := snapcast.ParseResult[snapcast.ServerGetStatusResponse](res.Result)
+	serverStatusRes, err := snapcast.ParseResult[snapcast.ServerGetStatusResponse](res.Result)
 	if err != nil {
 		slog.Error("Error ...", "error", res.Error)
 	}
-	fmt.Println("Initial state", serverStatus)
+
+	serverStatus, err := parseServerStatus(serverStatusRes)
+	if err != nil {
+		slog.Error("Error ...", "error", err)
+	}
+
+	bridge.publishServerStatus(*serverStatus)
+	bridge.ServerStatus = *serverStatus
 }
 
-func (bridge *SnapcastMQTTBridge) printGroupStatus() {
+func (bridge *SnapcastMQTTBridge) processGroupStatus(groupID string) {
 
-	res, err := bridge.SnapClient.Send(context.Background(), snapcast.MethodGroupGetStatus, struct{}{})
+	res, err := bridge.SnapClient.Send(context.Background(), snapcast.MethodGroupGetStatus, &snapcast.GroupGetStatusRequest{ID: groupID})
 	if err != nil {
 		slog.Error("Error ...", "error", err)
 	}
@@ -114,11 +142,13 @@ func (bridge *SnapcastMQTTBridge) printGroupStatus() {
 		slog.Error("Error ...", "error", res.Error)
 	}
 
-	groupStatus, err := snapcast.ParseResult[snapcast.GroupGetStatusResponse](res.Result)
+	groupStatusRes, err := snapcast.ParseResult[snapcast.GroupGetStatusResponse](res.Result)
 	if err != nil {
 		slog.Error("Error ...", "error", res.Error)
 	}
-	fmt.Println("Group status", groupStatus)
+
+	groupStatus, err := parseGroupStatus(&groupStatusRes.Group)
+	bridge.ServerStatus.Groups[groupStatus.GroupID] = *groupStatus
 }
 
 func (bridge *SnapcastMQTTBridge) MainLoop() {
@@ -140,77 +170,35 @@ func (bridge *SnapcastMQTTBridge) MainLoop() {
 		slog.Error("Error listening for notifications on snapclient", "error", err)
 	}
 
-	// Listen for events
 	go func() {
 		for {
 			select {
-			case m := <-notify.MsgReaderErr:
-				fmt.Println("Message reader error", m)
-				continue
+
+			case <-notify.ClientOnConnect:
+				bridge.processServerStatus()
+			case <-notify.ClientOnDisconnect:
+				bridge.processServerStatus()
+			case <-notify.ClientOnNameChanged:
+				bridge.processServerStatus()
+			case <-notify.ClientOnVolumeChanged:
+				bridge.processServerStatus() //todo update value directly?
+
+			case m := <-notify.GroupOnMute:
+				bridge.processGroupStatus(m.ID) //todo update value directly?
+			case m := <-notify.GroupOnNameChanged:
+				bridge.processGroupStatus(m.ID)
 			case m := <-notify.GroupOnStreamChanged:
-				fmt.Println("GroupOnStreamChanged", m)
-			case m := <-notify.ServerOnUpdate:
-				fmt.Println("ServerOnUpdate", m)
-			case m := <-notify.ClientOnVolumeChanged:
-				fmt.Println("ClientOnVolumeChanged", m)
-			case m := <-notify.ClientOnNameChanged:
-				fmt.Println("ClientOnNameChanged", m)
+				bridge.processGroupStatus(m.ID)
+
+			case <-notify.ServerOnUpdate:
+				bridge.processServerStatus()
+			case m := <-notify.MsgReaderErr:
+				slog.Debug("Message reader error", "error", m.Error())
+				continue
 			}
 		}
 	}()
 
 	panic(<-wsClose)
 
-	// res, err := bridge.SnapClient.Send(context.Background(), snapcast.MethodServerGetStatus, struct{}{})
-
-	// check(err)
-	// if res.Error != nil {
-	// 	log.Fatalln(res.Error)
-	// }
-
-	// initialState, err := snapcast.ParseResult[snapcast.ServerGetStatusResponse](res.Result)
-	// check(err)
-	// fmt.Println("Initial state", initialState)
-
-	// for {
-	// 	reconnectRouterOsClient := false
-	// 	reply, err := bridge.RouterOSClient.Run("/interface/wireless/registration-table/print")
-	// 	if err != nil {
-	// 		slog.Error("Could not retrieve registration table", "error", err)
-	// 		reconnectRouterOsClient = true
-	// 	} else {
-	// 		var clients []WifiClient
-	// 		for _, re := range reply.Re {
-	// 			client := WifiClient{
-	// 				MacAddress:    re.Map["mac-address"],
-	// 				Interface:     re.Map["interface"],
-	// 				Uptime:        re.Map["uptime"],
-	// 				LastActivity:  re.Map["last-activity"],
-	// 				SignalToNoise: re.Map["signal-to-noise"],
-	// 			}
-	// 			clients = append(clients, client)
-	// 		}
-	// 		jsonData, err := json.MarshalIndent(clients, "", "    ")
-	// 		if err != nil {
-	// 			slog.Error("Failed to create json", "error", err)
-	// 			continue
-	// 		}
-	// 		bridge.PublishMQTT("routeros/wificlients", string(jsonData), false)
-	// 		bridge.MqttClient.IsConnected()
-	// 	}
-
-	// 	time.Sleep(30 * time.Second)
-	// 	if reconnectRouterOsClient {
-	// 		slog.Error("Reconnecting RouterOS client")
-	// 		err = bridge.RouterOSClient.Close()
-	// 		if err != nil {
-	// 			slog.Error("Error when closing RouterOS client", "error", err)
-	// 		}
-	// 		client, err := CreateRouterOSClient(bridge.RouterOSClientConfig)
-	// 		if err != nil {
-	// 			slog.Error("Error when recreating RouterOS client", "error", err)
-	// 		}
-	// 		bridge.RouterOSClient = client
-	// 	}
-	// }
 }
