@@ -68,7 +68,8 @@ func NewSnapcastMQTTBridge(snapClientConfig SnapClientConfig, mqttClient mqtt.Cl
 	}
 
 	funcs := map[string]func(client mqtt.Client, message mqtt.Message){
-		"snapcast/group/+/stream/set": bridge.onGroupStreamSet,
+		"snapcast/group/+/stream/set":  bridge.onGroupStreamSet,
+		"snapcast/client/+/stream/set": bridge.onClientStreamSet,
 	}
 	for key, function := range funcs {
 		token := mqttClient.Subscribe(prefixify(topicPrefix, key), 0, function)
@@ -85,6 +86,7 @@ func prefixify(topicPrefix, subtopic string) string {
 		return subtopic
 	}
 }
+
 func (bridge *SnapcastMQTTBridge) onGroupStreamSet(client mqtt.Client, message mqtt.Message) {
 	bridge.sendMutex.Lock()
 	defer bridge.sendMutex.Unlock()
@@ -97,7 +99,43 @@ func (bridge *SnapcastMQTTBridge) onGroupStreamSet(client mqtt.Client, message m
 		streamId := string(message.Payload())
 		if streamId != "" {
 
-			bridge.PublishMQTT("snapcast/group/"+streamId+"/stream/set", "", false)
+			bridge.PublishMQTT("snapcast/group/"+groupId+"/stream/set", "", false)
+
+			res, err := bridge.SnapClient.Send(context.Background(), snapcast.MethodGroupSetStream,
+				&snapcast.GroupSetStreamRequest{ID: groupId, StreamID: streamId})
+			if err != nil {
+				slog.Error("Error when setting group stream id ", "error", err, "streamid", streamId, "groupid", groupId)
+			}
+			if res.Error != nil {
+				slog.Error("Error in response to group set stream id", "error", res.Error, "streamid", streamId, "groupid", groupId)
+			}
+
+			_, err = snapcast.ParseResult[snapcast.GroupSetStreamResponse](res.Result)
+			if err != nil {
+				slog.Error("Error when parsing group set stream id response", "error", res.Error, "streamid", streamId, "groupid", groupId)
+			}
+		}
+	}
+}
+
+func (bridge *SnapcastMQTTBridge) onClientStreamSet(client mqtt.Client, message mqtt.Message) {
+	bridge.sendMutex.Lock()
+	defer bridge.sendMutex.Unlock()
+
+	re := regexp.MustCompile(`^snapcast/client/([^/]+)/stream/set$`)
+	matches := re.FindStringSubmatch(message.Topic())
+	if matches != nil {
+		streamId := string(message.Payload())
+		if streamId != "" {
+			clientId := matches[1]
+			client, exists := bridge.ServerStatus.Clients[clientId]
+			if !exists {
+				slog.Error("Client not found", "clientId", clientId)
+				return
+			}
+			groupId := client.GroupID
+
+			bridge.PublishMQTT("snapcast/client/"+clientId+"/stream/set", "", false)
 
 			res, err := bridge.SnapClient.Send(context.Background(), snapcast.MethodGroupSetStream,
 				&snapcast.GroupSetStreamRequest{ID: groupId, StreamID: streamId})
