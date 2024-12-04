@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"regexp"
 	"strings"
+	"sync"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
@@ -18,6 +20,7 @@ type SnapcastMQTTBridge struct {
 	TopicPrefix      string
 	SnapClientConfig SnapClientConfig
 	ServerStatus     SnapcastServer
+	sendMutex        sync.Mutex
 }
 
 type SnapClientConfig struct {
@@ -64,6 +67,14 @@ func NewSnapcastMQTTBridge(snapClientConfig SnapClientConfig, mqttClient mqtt.Cl
 		SnapClientConfig: snapClientConfig,
 	}
 
+	funcs := map[string]func(client mqtt.Client, message mqtt.Message){
+		"snapcast/group/+/stream/set": bridge.onGroupStreamSet,
+	}
+	for key, function := range funcs {
+		token := mqttClient.Subscribe(prefixify(topicPrefix, key), 0, function)
+		token.Wait()
+	}
+
 	return bridge, nil
 }
 
@@ -72,6 +83,36 @@ func prefixify(topicPrefix, subtopic string) string {
 		return topicPrefix + "/" + subtopic
 	} else {
 		return subtopic
+	}
+}
+func (bridge *SnapcastMQTTBridge) onGroupStreamSet(client mqtt.Client, message mqtt.Message) {
+	bridge.sendMutex.Lock()
+	defer bridge.sendMutex.Unlock()
+
+	re := regexp.MustCompile(`^snapcast/group/([^/]+)/stream/set$`)
+	matches := re.FindStringSubmatch(message.Topic())
+	if matches != nil {
+		groupId := matches[1]
+
+		streamId := string(message.Payload())
+		if streamId != "" {
+
+			bridge.PublishMQTT("snapcast/group/"+streamId+"/stream/set", "", false)
+
+			res, err := bridge.SnapClient.Send(context.Background(), snapcast.MethodGroupSetStream,
+				&snapcast.GroupSetStreamRequest{ID: groupId, StreamID: streamId})
+			if err != nil {
+				slog.Error("Error when setting group stream id ", "error", err, "streamid", streamId, "groupid", groupId)
+			}
+			if res.Error != nil {
+				slog.Error("Error in response to group set stream id", "error", res.Error, "streamid", streamId, "groupid", groupId)
+			}
+
+			_, err = snapcast.ParseResult[snapcast.GroupSetStreamResponse](res.Result)
+			if err != nil {
+				slog.Error("Error when parsing group set stream id response", "error", res.Error, "streamid", streamId, "groupid", groupId)
+			}
+		}
 	}
 }
 
